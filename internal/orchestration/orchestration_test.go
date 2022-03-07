@@ -36,6 +36,7 @@ func TestOrchestration(t *testing.T) {
 				ConnectTimeout: durationpb.New(time.Second),
 				MaxConcurrent:  250,
 				PayloadSize:    100,
+				Timeout:        durationpb.New(500 * time.Millisecond),
 			},
 			ReplicaOpts: &orchestrationpb.ReplicaOpts{
 				BatchSize:         100,
