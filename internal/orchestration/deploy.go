@@ -8,11 +8,9 @@ package orchestration
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"math/rand"
 	"path"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -41,53 +39,50 @@ func Deploy(g iago.Group, cfg DeployConfig) (workers map[string]WorkerSession, e
 		workers: make(map[string]WorkerSession),
 	}
 
-	exe, err := filepath.Abs(cfg.ExePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make ExePath absolute: %w", err)
-	}
-
 	// catch panics and return any errors
 	defer func() {
 		err, _ = recover().(error)
 	}()
 
 	// alternative error handler that does not log
-	g.ErrorHandler = func(err error) {
+	silentPanic := func(err error) {
 		panic(err)
 	}
 
 	tmpDir := "hotstuff." + randString(8)
 
-	g.Run("Create temporary directory",
-		func(ctx context.Context, host iago.Host) (err error) {
-			testDir := strings.TrimPrefix(tempDirPath(host, tmpDir), "/")
+	g.Run(iago.Task{
+		Name: "Create temporary directory",
+		Action: iago.Do(func(ctx context.Context, host iago.Host) (err error) {
+			testDir := tempDirPath(host, tmpDir)
 			dataDir := testDir + "/data"
 			host.SetVar("test-dir", testDir)
 			host.SetVar("data-dir", dataDir)
-			err = fs.MkdirAll(host.GetFS(), dataDir, 0755)
+			err = fs.MkdirAll(host.GetFS(), iago.CleanPath(dataDir), 0755)
 			return err
-		})
+		}),
+		OnError: silentPanic,
+	})
 
-	g.Run(
-		"Upload hotstuff binary",
-		func(ctx context.Context, host iago.Host) (err error) {
-			dest, err := iago.NewPath("/", iago.GetStringVar(host, "test-dir")+"/hotstuff")
-			if err != nil {
-				return err
-			}
-			host.SetVar("exe", dest.String())
-			src, err := iago.NewPathFromAbs(exe)
-			if err != nil {
-				return err
-			}
+	g.Run(iago.Task{
+		Name: "Upload hotstuff binary",
+		Action: iago.Do(func(ctx context.Context, host iago.Host) (err error) {
+			dest := iago.GetStringVar(host, "test-dir") + "/hotstuff"
+			host.SetVar("exe", dest)
 			return iago.Upload{
-				Src:  src,
-				Dest: dest,
+				Src:  iago.P(cfg.ExePath),
+				Dest: iago.P(dest),
 				Perm: iago.NewPerm(0755),
 			}.Apply(ctx, host)
-		})
+		}),
+		OnError: silentPanic,
+	})
 
-	g.Run("Start hotstuff binary", w.Apply)
+	g.Run(iago.Task{
+		Name:    "Start hotstuff binary",
+		Action:  &w,
+		OnError: silentPanic,
+	})
 
 	return w.workers, nil
 }
@@ -100,33 +95,31 @@ func FetchData(g iago.Group, dest string) (err error) {
 	}()
 
 	// alternative error handler that does not log
-	g.ErrorHandler = func(err error) {
+	silentPanic := func(err error) {
 		panic(err)
 	}
 
 	if dest != "" {
-		g.Run("Download test data",
-			func(ctx context.Context, host iago.Host) (err error) {
-				src, err := iago.NewPathFromAbs(iago.GetStringVar(host, "data-dir")) // assuming the dir variable was set earlier
-				if err != nil {
-					return err
-				}
-				dst, err := iago.NewPathFromAbs(dest)
-				if err != nil {
-					return err
-				}
+		g.Run(iago.Task{
+			Name: "Download test data",
+			Action: iago.Do(func(ctx context.Context, host iago.Host) (err error) {
 				return iago.Download{
-					Src:  src,
-					Dest: dst,
+					Src:  iago.P(iago.GetStringVar(host, "data-dir")), // assuming the dir variable was set earlier
+					Dest: iago.P(dest),
 				}.Apply(ctx, host)
-			})
+			}),
+			OnError: silentPanic,
+		})
 	}
 
-	g.Run("Remove test directory",
-		func(ctx context.Context, host iago.Host) (err error) {
-			err = fs.RemoveAll(host.GetFS(), iago.GetStringVar(host, "test-dir"))
+	g.Run(iago.Task{
+		Name: "Remove test directory",
+		Action: iago.Do(func(ctx context.Context, host iago.Host) (err error) {
+			err = fs.RemoveAll(host.GetFS(), iago.CleanPath(iago.GetStringVar(host, "test-dir")))
 			return err
-		})
+		}),
+		OnError: silentPanic,
+	})
 
 	return nil
 }
@@ -198,7 +191,7 @@ func (w *workerSetup) Apply(ctx context.Context, host iago.Host) (err error) {
 		return err
 	}
 
-	dir := "/" + iago.GetStringVar(host, "data-dir")
+	dir := iago.GetStringVar(host, "data-dir")
 
 	var sb strings.Builder
 	sb.WriteString(iago.GetStringVar(host, "exe"))

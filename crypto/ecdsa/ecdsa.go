@@ -16,7 +16,9 @@ import (
 )
 
 func init() {
-	modules.RegisterModule("ecdsa", New)
+	modules.RegisterModule("ecdsa", func() consensus.CryptoImpl {
+		return New()
+	})
 }
 
 const (
@@ -117,20 +119,6 @@ func (sig ThresholdSignature) ForEach(f func(hotstuff.ID)) {
 	}
 }
 
-// RangeWhile calls f for each ID in the set until f returns false.
-func (sig ThresholdSignature) RangeWhile(f func(hotstuff.ID) bool) {
-	for id := range sig {
-		if !f(id) {
-			break
-		}
-	}
-}
-
-// Len returns the number of entries in the set.
-func (sig ThresholdSignature) Len() int {
-	return len(sig)
-}
-
 var _ consensus.ThresholdSignature = (*ThresholdSignature)(nil)
 var _ consensus.IDSet = (*ThresholdSignature)(nil)
 
@@ -181,28 +169,6 @@ func (ec *ecdsaCrypto) Verify(sig consensus.Signature, hash consensus.Hash) bool
 	}
 	pk := replica.PublicKey().(*ecdsa.PublicKey)
 	return ecdsa.Verify(pk, hash[:], _sig.R(), _sig.S())
-}
-
-// VerifyAggregateSignature verifies an aggregated signature.
-// It does not check whether the aggregated signature contains a quorum of signatures.
-func (ec *ecdsaCrypto) VerifyAggregateSignature(agg consensus.ThresholdSignature, hash consensus.Hash) bool {
-	sig, ok := agg.(ThresholdSignature)
-	if !ok {
-		return false
-	}
-	results := make(chan bool)
-	for _, pSig := range sig {
-		go func(sig *Signature) {
-			results <- ec.mods.Crypto().Verify(sig, hash)
-		}(pSig)
-	}
-	valid := true
-	for range sig {
-		if <-results {
-			valid = false
-		}
-	}
-	return valid
 }
 
 // CreateThresholdSignature creates a threshold signature from the given partial signatures.
@@ -323,29 +289,6 @@ func (ec *ecdsaCrypto) VerifyThresholdSignatureForMessageSet(signature consensus
 		}
 	}
 	return numVerified >= ec.mods.Configuration().QuorumSize()
-}
-
-// Combine combines multiple signatures into a single threshold signature.
-// Arguments can be singular signatures or threshold signatures.
-//
-// As opposed to the CreateThresholdSignature methods,
-// this method does not check whether the resulting
-// signature meets the quorum size.
-func (ec *ecdsaCrypto) Combine(signatures ...interface{}) consensus.ThresholdSignature {
-	ts := make(ThresholdSignature)
-
-	for _, sig := range signatures {
-		switch sig := sig.(type) {
-		case *Signature:
-			ts[sig.signer] = sig
-		case ThresholdSignature:
-			for _, s := range sig {
-				ts[s.signer] = s
-			}
-		}
-	}
-
-	return ts
 }
 
 var _ consensus.CryptoImpl = (*ecdsaCrypto)(nil)

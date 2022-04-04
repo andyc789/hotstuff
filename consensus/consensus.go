@@ -15,8 +15,6 @@ type Rules interface {
 	// CommitRule decides whether any ancestor of the block can be committed.
 	// Returns the youngest ancestor of the block that can be committed.
 	CommitRule(*Block) *Block
-	// ChainLength returns the number of blocks that need to be chained together in order to commit.
-	ChainLength() int
 }
 
 // ProposeRuler is an optional interface that adds a ProposeRule method.
@@ -40,6 +38,15 @@ type consensusBase struct {
 
 // New returns a new Consensus instance based on the given Rules implementation.
 func New(impl Rules) Consensus {
+	return &consensusBase{
+		impl:     impl,
+		lastVote: 0,
+		bExec:    GetGenesis(),
+	}
+}
+
+// New returns a new consensusBase instance based on the given Rules implementation.
+func NewConsensusBase(impl Rules) *consensusBase {
 	return &consensusBase{
 		impl:     impl,
 		lastVote: 0,
@@ -123,9 +130,16 @@ func (cs *consensusBase) Propose(cert SyncInfo) {
 }
 
 func (cs *consensusBase) OnPropose(proposal ProposeMsg) {
+	//fmt.Printf("Debugging: %s", cs.mods.consensus.CommittedBlock().hash)
 	cs.mods.Logger().Debugf("OnPropose: %v", proposal.Block)
 
 	block := proposal.Block
+
+	// ensure the block came from the leader.
+	if proposal.ID != cs.mods.LeaderRotation().GetLeader(block.View()) {
+		cs.mods.Logger().Info("OnPropose: block was not proposed by the expected leader")
+		return
+	}
 
 	if cs.mods.Options().ShouldUseAggQC() && proposal.AggregateQC != nil {
 		ok, highQC := cs.mods.Crypto().VerifyAggregateQC(*proposal.AggregateQC)
@@ -145,23 +159,12 @@ func (cs *consensusBase) OnPropose(proposal ProposeMsg) {
 		return
 	}
 
-	cs.mods.synchronizer.UpdateHighQC(block.QuorumCert())
-
-	// ensure the block came from the leader.
-	if proposal.ID != cs.mods.LeaderRotation().GetLeader(block.View()) {
-		cs.mods.Logger().Info("OnPropose: block was not proposed by the expected leader")
-		return
-	}
-
 	if !cs.impl.VoteRule(proposal) {
-		cs.mods.Logger().Info("OnPropose: Block not voted for")
 		return
 	}
 
 	if qcBlock, ok := cs.mods.BlockChain().Get(block.QuorumCert().BlockHash()); ok {
 		cs.mods.Acceptor().Proposed(qcBlock.Command())
-	} else {
-		cs.mods.Logger().Info("OnPropose: Failed to fetch qcBlock")
 	}
 
 	if !cs.mods.Acceptor().Accept(block.Command()) {
@@ -174,10 +177,11 @@ func (cs *consensusBase) OnPropose(proposal ProposeMsg) {
 
 	// we defer the following in order to speed up voting
 	defer func() {
+		cs.mods.Synchronizer().AdvanceView(NewSyncInfo().WithQC(block.QuorumCert()))
+
 		if b := cs.impl.CommitRule(block); b != nil {
 			cs.commit(b)
 		}
-		cs.mods.Synchronizer().AdvanceView(NewSyncInfo().WithQC(block.QuorumCert()))
 	}()
 
 	if block.View() <= cs.lastVote {
@@ -195,8 +199,8 @@ func (cs *consensusBase) OnPropose(proposal ProposeMsg) {
 
 	leaderID := cs.mods.LeaderRotation().GetLeader(cs.lastVote + 1)
 	if leaderID == cs.mods.ID() {
-		cs.mods.EventLoop().AddEvent(VoteMsg{ID: cs.mods.ID(), PartialCert: pc})
-		return
+	go cs.mods.EventLoop().AddEvent(VoteMsg{ID: cs.mods.ID(), PartialCert: pc})
+	return
 	}
 
 	leader, ok := cs.mods.Configuration().Replica(leaderID)
@@ -226,17 +230,9 @@ func (cs *consensusBase) commitInner(block *Block) {
 	if cs.bExec.View() < block.View() {
 		if parent, ok := cs.mods.BlockChain().Get(block.Parent()); ok {
 			cs.commitInner(parent)
-		} else {
-			cs.mods.Logger().Warn("Refusing to commit because parent block could not be retrieved.")
-			return
 		}
 		cs.mods.Logger().Debug("EXEC: ", block)
 		cs.mods.Executor().Exec(block)
 		cs.bExec = block
 	}
-}
-
-// ChainLength returns the number of blocks that need to be chained together in order to commit.
-func (cs *consensusBase) ChainLength() int {
-	return cs.impl.ChainLength()
 }

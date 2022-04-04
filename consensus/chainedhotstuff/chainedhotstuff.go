@@ -7,7 +7,9 @@ import (
 )
 
 func init() {
-	modules.RegisterModule("chainedhotstuff", New)
+	modules.RegisterModule("chainedhotstuff", func() consensus.Rules {
+		return New()
+	})
 }
 
 // ChainedHotStuff implements the pipelined three-phase HotStuff protocol.
@@ -41,6 +43,7 @@ func (hs *ChainedHotStuff) qcRef(qc consensus.QuorumCert) (*consensus.Block, boo
 
 // CommitRule decides whether an ancestor of the block should be committed.
 func (hs *ChainedHotStuff) CommitRule(block *consensus.Block) *consensus.Block {
+
 	block1, ok := hs.qcRef(block.QuorumCert())
 	if !ok {
 		return nil
@@ -60,17 +63,26 @@ func (hs *ChainedHotStuff) CommitRule(block *consensus.Block) *consensus.Block {
 		hs.bLock = block2
 	}
 
-	block3, ok := hs.qcRef(block2.QuorumCert())
-	if !ok {
-		return nil
-	}
+	/*
+		block3, ok := hs.qcRef(block2.QuorumCert())
+		if !ok {
+			return nil
+		}
 
-	if block1.Parent() == block2.Hash() && block2.Parent() == block3.Hash() {
-		hs.mods.Logger().Debug("DECIDE: ", block3)
-		return block3
+
+		if block1.Parent() == block2.Hash() && block2.Parent() == block3.Hash() {
+			hs.mods.Logger().Debug("DECIDE: ", block3)
+			return block3
+		}
+	*/
+
+	if block1.Parent() == block2.Hash() {
+		hs.mods.Logger().Debug("DECIDE: ", block2)
+		return block2
 	}
 
 	return nil
+
 }
 
 // VoteRule decides whether to vote for the proposal or not.
@@ -93,9 +105,4 @@ func (hs *ChainedHotStuff) VoteRule(proposal consensus.ProposeMsg) bool {
 	}
 
 	return safe
-}
-
-// ChainLength returns the number of blocks that need to be chained together in order to commit.
-func (hs *ChainedHotStuff) ChainLength() int {
-	return 3
 }

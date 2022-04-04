@@ -16,9 +16,9 @@ import (
 	"github.com/relab/hotstuff/crypto/bls12"
 	"github.com/relab/hotstuff/crypto/ecdsa"
 	"github.com/relab/hotstuff/crypto/keygen"
+	"github.com/relab/hotstuff/internal/logging"
 	"github.com/relab/hotstuff/internal/mocks"
 	"github.com/relab/hotstuff/leaderrotation"
-	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/synchronizer"
 )
 
@@ -348,8 +348,8 @@ func NewLeaderRotation(t *testing.T, order ...hotstuff.ID) consensus.LeaderRotat
 }
 
 // FixedTimeout returns an ExponentialTimeout with a max exponent of 0.
-func FixedTimeout(timeout time.Duration) synchronizer.ViewDuration {
-	return fixedDuration{timeout}
+func FixedTimeout(timeout float64) synchronizer.ViewDuration {
+	return fixedDuration{time.Duration(timeout * float64(time.Millisecond))}
 }
 
 type fixedDuration struct {

@@ -16,7 +16,6 @@ import (
 	"github.com/relab/hotstuff/internal/orchestration"
 	"github.com/relab/hotstuff/internal/proto/orchestrationpb"
 	"github.com/relab/hotstuff/internal/protostream"
-	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/modules"
 	"github.com/relab/iago"
 	"github.com/spf13/cobra"
@@ -49,7 +48,6 @@ func init() {
 	runCmd.Flags().Int("batch-size", 1, "number of commands to batch together in each block")
 	runCmd.Flags().Int("payload-size", 0, "size in bytes of the command payload")
 	runCmd.Flags().Int("max-concurrent", 4, "maximum number of conccurrent commands per client")
-	runCmd.Flags().Duration("client-timeout", 500*time.Millisecond, "Client timeout.")
 	runCmd.Flags().Duration("duration", 10*time.Second, "duration of the experiment")
 	runCmd.Flags().Duration("connect-timeout", 5*time.Second, "duration of the initial connection timeout")
 	runCmd.Flags().Duration("view-timeout", 100*time.Millisecond, "duration of the first view")
@@ -59,8 +57,6 @@ func init() {
 	runCmd.Flags().String("consensus", "chainedhotstuff", "name of the consensus implementation")
 	runCmd.Flags().String("crypto", "ecdsa", "name of the crypto implementation")
 	runCmd.Flags().String("leader-rotation", "round-robin", "name of the leader rotation algorithm")
-	runCmd.Flags().Int64("shared-seed", 0, "Shared random number generator seed")
-	runCmd.Flags().StringSlice("modules", nil, "Name additional modules to be loaded.")
 
 	runCmd.Flags().Bool("worker", false, "run a local worker")
 	runCmd.Flags().StringSlice("hosts", nil, "the remote hosts to run the experiment on via ssh")
@@ -97,7 +93,6 @@ func runController() {
 	}
 
 	experiment := orchestration.Experiment{
-		Logger:      logging.New("ctrl"),
 		NumReplicas: viper.GetInt("replicas"),
 		NumClients:  viper.GetInt("clients"),
 		Duration:    viper.GetDuration("duration"),
@@ -112,8 +107,6 @@ func runController() {
 			InitialTimeout:    durationpb.New(viper.GetDuration("view-timeout")),
 			TimeoutSamples:    viper.GetUint32("duration-samples"),
 			MaxTimeout:        durationpb.New(viper.GetDuration("max-timeout")),
-			SharedSeed:        viper.GetInt64("shared-seed"),
-			Modules:           viper.GetStringSlice("modules"),
 		},
 		ClientOpts: &orchestrationpb.ClientOpts{
 			UseTLS:           true,
@@ -123,7 +116,6 @@ func runController() {
 			RateLimit:        viper.GetFloat64("rate-limit"),
 			RateStep:         viper.GetFloat64("rate-step"),
 			RateStepInterval: durationpb.New(viper.GetDuration("rate-step-interval")),
-			Timeout:          durationpb.New(viper.GetDuration("client-timeout")),
 		},
 	}
 

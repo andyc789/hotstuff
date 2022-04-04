@@ -16,7 +16,9 @@ import (
 )
 
 func init() {
-	modules.RegisterModule("bls12", New)
+	modules.RegisterModule("bls12", func() consensus.CryptoImpl {
+		return New()
+	})
 }
 
 const (
@@ -155,15 +157,6 @@ func (agg AggregateSignature) Bitfield() crypto.Bitfield {
 	return agg.participants
 }
 
-// AddSignatures adds additional signatures to the aggregate.
-func (agg *AggregateSignature) AddSignatures(signatures map[hotstuff.ID]*Signature) {
-	g2 := bls12.NewG2()
-	for id, s := range signatures {
-		g2.Add(&agg.sig, &agg.sig, s.s)
-		agg.participants.Add(id)
-	}
-}
-
 // bls12Crypto is a Signer/Verifier implementation that uses bls12-381 aggregate signatures.
 type bls12Crypto struct {
 	mods *consensus.Modules
@@ -197,8 +190,7 @@ func (bc *bls12Crypto) Sign(hash consensus.Hash) (sig consensus.Signature, err e
 	return &Signature{signer: bc.mods.ID(), s: p}, nil
 }
 
-// AggregateSignatures aggregates the signatures to form a single aggregated signature.
-func AggregateSignatures(signatures map[hotstuff.ID]*Signature) *AggregateSignature {
+func (bc *bls12Crypto) aggregateSignatures(signatures map[hotstuff.ID]*Signature) *AggregateSignature {
 	if len(signatures) == 0 {
 		return nil
 	}
@@ -230,39 +222,11 @@ func (bc *bls12Crypto) Verify(sig consensus.Signature, hash consensus.Hash) bool
 	return engine.Result().IsOne()
 }
 
-// VerifyAggregateSignature verifies an aggregated signature.
-// It does not check whether the aggregated signature contains a quorum of signatures.
-func (bc *bls12Crypto) VerifyAggregateSignature(agg consensus.ThresholdSignature, hash consensus.Hash) bool {
-	sig, ok := agg.(*AggregateSignature)
-	if !ok {
-		return false
-	}
-	pubKeys := make([]*PublicKey, 0)
-	sig.participants.ForEach(func(id hotstuff.ID) {
-		replica, ok := bc.mods.Configuration().Replica(id)
-		if !ok {
-			return
-		}
-		pubKeys = append(pubKeys, replica.PublicKey().(*PublicKey))
-	})
-	ps, err := bls12.NewG2().HashToCurve(hash[:], domain)
-	if err != nil {
-		bc.mods.Logger().Error(err)
-		return false
-	}
-	engine := bls12.NewEngine()
-	engine.AddPairInv(&bls12.G1One, &sig.sig)
-	for _, pub := range pubKeys {
-		engine.AddPair(pub.p, ps)
-	}
-	return engine.Result().IsOne()
-}
-
 // TODO: I'm not sure to what extent we are vulnerable to a rogue public key attack here.
 // As far as I can tell, this is not a problem right now because we do not yet support reconfiguration,
 // and all public keys are known by all replicas.
 
-// VerifyThresholdSignature verifies a threshold signature.
+// VerifyThresholdSignature verifies an aggregate signature.
 func (bc *bls12Crypto) VerifyThresholdSignature(signature consensus.ThresholdSignature, hash consensus.Hash) bool {
 	sig, ok := signature.(*AggregateSignature)
 	if !ok {
@@ -351,7 +315,7 @@ func (bc *bls12Crypto) CreateThresholdSignature(partialSignatures []consensus.Si
 	if len(sigs) < bc.mods.Configuration().QuorumSize() {
 		return nil, multierr.Combine(crypto.ErrNotAQuorum, err)
 	}
-	return AggregateSignatures(sigs), nil
+	return bc.aggregateSignatures(sigs), nil
 }
 
 // CreateThresholdSignatureForMessageSet creates a threshold signature where each partial signature has signed a
@@ -359,27 +323,4 @@ func (bc *bls12Crypto) CreateThresholdSignature(partialSignatures []consensus.Si
 func (bc *bls12Crypto) CreateThresholdSignatureForMessageSet(partialSignatures []consensus.Signature, hashes map[hotstuff.ID]consensus.Hash) (consensus.ThresholdSignature, error) {
 	// Don't care about the hashes for signature aggregation.
 	return bc.CreateThresholdSignature(partialSignatures, consensus.Hash{})
-}
-
-// Combine combines multiple signatures into a single threshold signature.
-// Arguments can be singular signatures or threshold signatures.
-//
-// As opposed to the CreateThresholdSignature methods,
-// this method does not check whether the resulting
-// signature meets the quorum size.
-func (bc *bls12Crypto) Combine(signatures ...interface{}) consensus.ThresholdSignature {
-	g2 := bls12.NewG2()
-	agg := bls12.PointG2{}
-	var participants crypto.Bitfield
-	for _, sig := range signatures {
-		switch sig := sig.(type) {
-		case *Signature:
-			participants.Add(sig.signer)
-			g2.Add(&agg, &agg, sig.s)
-		case *AggregateSignature:
-			sig.participants.ForEach(participants.Add)
-			g2.Add(&agg, &agg, &sig.sig)
-		}
-	}
-	return &AggregateSignature{sig: agg, participants: participants}
 }

@@ -2,8 +2,10 @@ package consensus
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/relab/hotstuff"
+	"github.com/relab/hotstuff/eventloop"
 	"github.com/relab/hotstuff/modules"
 )
 
@@ -14,6 +16,7 @@ type Modules struct {
 
 	privateKey    PrivateKey
 	opts          Options
+	eventLoop     *eventloop.EventLoop
 	votingMachine *VotingMachine
 
 	acceptor       Acceptor
@@ -30,7 +33,24 @@ type Modules struct {
 
 // Run starts both event loops using the provided context and returns when both event loops have exited.
 func (mods *Modules) Run(ctx context.Context) {
-	mods.EventLoop().Run(ctx)
+	fmt.Print("start")
+	mainDone := make(chan struct{})
+	fmt.Print("first")
+	go func() {
+		mods.EventLoop().Run(ctx)
+		close(mainDone)
+	}()
+
+	
+
+	secondaryDone := make(chan struct{})
+	go func() {
+		mods.MetricsEventLoop().Run(ctx)
+		close(secondaryDone)
+	}()
+
+	<-mainDone
+	<-secondaryDone
 }
 
 // PrivateKey returns the private key.
@@ -41,6 +61,15 @@ func (mods *Modules) PrivateKey() PrivateKey {
 // Options returns the current configuration settings.
 func (mods *Modules) Options() *Options {
 	return &mods.opts
+}
+
+// EventLoop returns the main event loop.
+//
+// This event loop should be used by components that participate in the consensus protocol.
+// Events related to data collection should instead use the secondary event loop,
+// which is accessible using the MetricsEventLoop() method.
+func (mods *Modules) EventLoop() *eventloop.EventLoop {
+	return mods.eventLoop
 }
 
 // Acceptor returns the acceptor.
@@ -108,10 +137,9 @@ func NewBuilder(id hotstuff.ID, privateKey PrivateKey) Builder {
 		mods: &Modules{
 			privateKey:    privateKey,
 			votingMachine: NewVotingMachine(),
+			eventLoop:     eventloop.New(100), // TODO: make this configurable
 		},
 	}
-	// using a pointer here will allow settings to be readable within InitConsensusModule
-	bl.cfg.opts = &bl.mods.opts
 	// some of the default modules need to be registered
 	bl.Register(bl.mods.votingMachine)
 	return bl
@@ -122,7 +150,7 @@ func NewBuilder(id hotstuff.ID, privateKey PrivateKey) Builder {
 // If only the Module interface is implemented, the InitModule function will be called, but
 // the HotStuff object will not save a reference to the module.
 // Register will overwrite existing modules if the same type is registered twice.
-func (b *Builder) Register(mods ...interface{}) { //nolint:gocyclo
+func (b *Builder) Register(mods ...interface{}) {
 	for _, module := range mods {
 		b.baseBuilder.Register(module)
 		if m, ok := module.(Acceptor); ok {
@@ -167,18 +195,13 @@ func (b *Builder) Register(mods ...interface{}) { //nolint:gocyclo
 	}
 }
 
-// OptionsBuilder returns a pointer to the options builder.
-// This can be used to configure runtime options.
-func (b *Builder) OptionsBuilder() *OptionsBuilder {
-	return &b.cfg
-}
-
 // Build initializes all modules and returns the HotStuff object.
 func (b *Builder) Build() *Modules {
-	b.mods.Modules = b.baseBuilder.Build()
 	for _, module := range b.modules {
 		module.InitConsensusModule(b.mods, &b.cfg)
 	}
+	b.mods.opts = b.cfg.opts
+	b.mods.Modules = b.baseBuilder.Build()
 	return b.mods
 }
 
@@ -252,9 +275,6 @@ type CryptoImpl interface {
 	Sign(hash Hash) (sig Signature, err error)
 	// Verify verifies a signature given a hash.
 	Verify(sig Signature, hash Hash) bool
-	// VerifyAggregateSignature verifies an aggregated signature.
-	// It does not check whether the aggregated signature contains a quorum of signatures.
-	VerifyAggregateSignature(agg ThresholdSignature, hash Hash) bool
 	// CreateThresholdSignature creates a threshold signature from the given partial signatures.
 	CreateThresholdSignature(partialSignatures []Signature, hash Hash) (ThresholdSignature, error)
 	// CreateThresholdSignatureForMessageSet creates a threshold signature where each partial signature has signed a
@@ -264,13 +284,6 @@ type CryptoImpl interface {
 	VerifyThresholdSignature(signature ThresholdSignature, hash Hash) bool
 	// VerifyThresholdSignatureForMessageSet verifies a threshold signature against a set of message hashes.
 	VerifyThresholdSignatureForMessageSet(signature ThresholdSignature, hashes map[hotstuff.ID]Hash) bool
-	// Combine combines multiple signatures into a single threshold signature.
-	// Arguments can be singular signatures or threshold signatures.
-	//
-	// As opposed to the CreateThresholdSignature methods,
-	// this method does not check whether the resulting
-	// signature meets the quorum size.
-	Combine(signatures ...interface{}) ThresholdSignature
 }
 
 // Crypto implements the methods required to create and verify signatures and certificates.
@@ -364,8 +377,6 @@ type Consensus interface {
 	Propose(cert SyncInfo)
 	// CommittedBlock returns the most recently committed block.
 	CommittedBlock() *Block
-	// ChainLength returns the number of blocks that need to be chained together in order to commit.
-	ChainLength() int
 }
 
 // LeaderRotation implements a leader rotation scheme.
@@ -381,8 +392,6 @@ type Synchronizer interface {
 	// AdvanceView attempts to advance to the next view using the given QC.
 	// qc must be either a regular quorum certificate, or a timeout certificate.
 	AdvanceView(SyncInfo)
-	// UpdateHighQC attempts to update HighQC using the given QC.
-	UpdateHighQC(QuorumCert)
 	// View returns the current view.
 	View() View
 	// ViewContext returns a context that is cancelled at the end of the view.

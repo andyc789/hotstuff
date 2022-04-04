@@ -12,16 +12,15 @@ import (
 
 	"github.com/relab/gorums"
 	"github.com/relab/hotstuff"
-	"github.com/relab/hotstuff/backend"
 	"github.com/relab/hotstuff/blockchain"
 	"github.com/relab/hotstuff/client"
+	"github.com/relab/hotstuff/config"
 	"github.com/relab/hotstuff/consensus"
 	"github.com/relab/hotstuff/consensus/byzantine"
 	"github.com/relab/hotstuff/crypto"
 	"github.com/relab/hotstuff/crypto/keygen"
 	"github.com/relab/hotstuff/internal/proto/orchestrationpb"
 	"github.com/relab/hotstuff/internal/protostream"
-	"github.com/relab/hotstuff/logging"
 	"github.com/relab/hotstuff/metrics"
 	"github.com/relab/hotstuff/metrics/types"
 	"github.com/relab/hotstuff/modules"
@@ -199,23 +198,12 @@ func (w *Worker) createReplica(opts *orchestrationpb.ReplicaOpts) (*replica.Repl
 		sync,
 		w.metricsLogger,
 		blockchain.New(),
-		logging.New("hs"+strconv.Itoa(int(opts.GetID()))),
 	)
-
-	builder.OptionsBuilder().SetSharedRandomSeed(opts.GetSharedSeed())
 
 	if w.measurementInterval > 0 {
 		replicaMetrics := metrics.GetReplicaMetrics(w.metrics...)
 		builder.Register(replicaMetrics...)
 		builder.Register(metrics.NewTicker(w.measurementInterval))
-	}
-
-	for _, n := range opts.GetModules() {
-		m, ok := modules.GetModuleUntyped(n)
-		if !ok {
-			return nil, fmt.Errorf("no module named '%s'", n)
-		}
-		builder.Register(m)
 	}
 
 	c := replica.Config{
@@ -240,7 +228,7 @@ func (w *Worker) startReplicas(req *orchestrationpb.StartReplicaRequest) (*orche
 		if !ok {
 			return nil, status.Errorf(codes.NotFound, "The replica with ID %d was not found.", id)
 		}
-		cfg, err := getConfiguration(req.GetConfiguration(), false)
+		cfg, err := getConfiguration(hotstuff.ID(id), req.GetConfiguration(), false)
 		if err != nil {
 			return nil, err
 		}
@@ -280,6 +268,7 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 		w.metricsLogger.Log(opts)
 
 		c := client.Config{
+			ID:            hotstuff.ID(opts.GetID()),
 			TLS:           opts.GetUseTLS(),
 			RootCAs:       cp,
 			MaxConcurrent: opts.GetMaxConcurrent(),
@@ -292,9 +281,8 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 			RateLimit:        opts.GetRateLimit(),
 			RateStep:         opts.GetRateStep(),
 			RateStepInterval: opts.GetRateStepInterval().AsDuration(),
-			Timeout:          opts.GetTimeout().AsDuration(),
 		}
-		mods := modules.NewBuilder(hotstuff.ID(opts.GetID()))
+		mods := modules.NewBuilder(c.ID)
 
 		if w.measurementInterval > 0 {
 			clientMetrics := metrics.GetClientMetrics(w.metrics...)
@@ -303,9 +291,8 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 		}
 
 		mods.Register(w.metricsLogger)
-		mods.Register(logging.New("cli" + strconv.Itoa(int(opts.GetID()))))
 		cli := client.New(c, mods)
-		cfg, err := getConfiguration(req.GetConfiguration(), true)
+		cfg, err := getConfiguration(hotstuff.ID(opts.GetID()), req.GetConfiguration(), true)
 		if err != nil {
 			return nil, err
 		}
@@ -314,7 +301,7 @@ func (w *Worker) startClients(req *orchestrationpb.StartClientRequest) (*orchest
 			return nil, err
 		}
 		cli.Start()
-		w.metricsLogger.Log(&types.StartEvent{Event: types.NewClientEvent(opts.GetID(), time.Now())})
+		w.metricsLogger.Log(&types.StartEvent{Event: types.NewClientEvent(uint32(c.ID), time.Now())})
 		w.clients[hotstuff.ID(opts.GetID())] = cli
 	}
 	return &orchestrationpb.StartClientResponse{}, nil
@@ -331,8 +318,9 @@ func (w *Worker) stopClients(req *orchestrationpb.StopClientRequest) (*orchestra
 	return &orchestrationpb.StopClientResponse{}, nil
 }
 
-func getConfiguration(conf map[uint32]*orchestrationpb.ReplicaInfo, client bool) ([]backend.ReplicaInfo, error) {
-	replicas := make([]backend.ReplicaInfo, 0, len(conf))
+func getConfiguration(id hotstuff.ID, conf map[uint32]*orchestrationpb.ReplicaInfo, client bool) (*config.ReplicaConfig, error) {
+	cfg := &config.ReplicaConfig{ID: id, Replicas: make(map[hotstuff.ID]*config.ReplicaInfo)}
+
 	for _, replica := range conf {
 		pubKey, err := keygen.ParsePublicKey(replica.GetPublicKey())
 		if err != nil {
@@ -344,13 +332,13 @@ func getConfiguration(conf map[uint32]*orchestrationpb.ReplicaInfo, client bool)
 		} else {
 			addr = net.JoinHostPort(replica.GetAddress(), strconv.Itoa(int(replica.GetReplicaPort())))
 		}
-		replicas = append(replicas, backend.ReplicaInfo{
+		cfg.Replicas[hotstuff.ID(replica.GetID())] = &config.ReplicaInfo{
 			ID:      hotstuff.ID(replica.GetID()),
 			Address: addr,
 			PubKey:  pubKey,
-		})
+		}
 	}
-	return replicas, nil
+	return cfg, nil
 }
 
 func getPort(lis net.Listener) (uint32, error) {

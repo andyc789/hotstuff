@@ -60,11 +60,7 @@ func (vm *VotingMachine) OnVote(vote VoteMsg) {
 		return
 	}
 
-	if vm.mods.Options().ShouldVerifyVotesSync() {
-		vm.verifyCert(cert, block)
-	} else {
-		go vm.verifyCert(cert, block)
-	}
+	go vm.verifyCert(cert, block)
 }
 
 func (vm *VotingMachine) verifyCert(cert PartialCert, block *Block) {
@@ -105,5 +101,7 @@ func (vm *VotingMachine) verifyCert(cert PartialCert, block *Block) {
 	}
 	delete(vm.verifiedVotes, cert.BlockHash())
 
+	// Signal the synchronizer. We cannot simply call AdvanceView because it is not guaranteed to be thread safe.
+	// However, because votes are handled asynchronously, we can safely use AddEvent without starting a goroutine.
 	vm.mods.EventLoop().AddEvent(NewViewMsg{ID: vm.mods.ID(), SyncInfo: NewSyncInfo().WithQC(qc)})
 }
